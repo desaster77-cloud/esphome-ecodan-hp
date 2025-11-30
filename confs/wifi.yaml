@@ -3,7 +3,8 @@ wifi:
   password: !secret wifi_password
   power_save_mode: high
   reboot_timeout: 0s
- ap:
+
+ap:
     ssid: "${name}"
     password: "configesp"
     ap_timeout: 15s
