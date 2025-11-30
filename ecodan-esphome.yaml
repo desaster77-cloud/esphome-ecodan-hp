@@ -54,7 +54,7 @@ external_components:
 
 packages:
   remote_package:
-    url: https://github.com/gekkekoe/esphome-ecodan-hp/
+    url: https://github.com/desaster77-cloud/esphome-ecodan-hp.git
     ref: main
     refresh: always
     files: [ 
@@ -71,12 +71,12 @@ packages:
             #confs/zone2.yaml,
             #confs/server-control-z2.yaml,
             ## enable label language files
-            confs/ecodan-labels-en.yaml,  # English
+            #confs/ecodan-labels-en.yaml,  # English
             # confs/ecodan-labels-nl.yaml,  # Dutch
             # confs/ecodan-labels-it.yaml,  # Italian
             # confs/ecodan-labels-fr.yaml,  # French
             # confs/ecodan-labels-de.yaml,  # German
-            # confs/ecodan-labels-fi.yaml,  # Finnish
+             confs/ecodan-labels-fi.yaml,  # Finnish
             # confs/ecodan-labels-no.yaml,  # Norwegian
             # confs/ecodan-labels-sv.yaml,  # Swedish
             # confs/ecodan-labels-da.yaml,  # Danish
