@@ -71,9 +71,88 @@ namespace esphome
             }
         }
 
+        float Optimizer::calculate_smart_boost(int profile, float error) {
+
+            if (!this->state_.smart_boost_enabled->state) {
+                this->current_stagnation_boost_ = 1.0f;
+                this->stagnation_start_time_ = 0;
+                return 1.0f;
+            }
+
+            uint32_t initial_wait_ms;
+            uint32_t step_interval_ms;
+            float max_boost_limit;
+            float step_size;
+            
+            if (profile <= 1) { // ufh 
+                initial_wait_ms = 3600000;  // 60m
+                step_interval_ms = 1800000; // 30m
+                max_boost_limit = 1.5f;     // Max +50% 
+                step_size = 0.15f;
+            } 
+            else if (profile >= 4) { // radiator
+                initial_wait_ms = 1200000;  // 20m
+                step_interval_ms = 600000;  // 10m
+                max_boost_limit = 2.5f;     // max +250%
+                step_size = 0.20f;
+            } 
+            else { // hybbrid
+                initial_wait_ms = 2700000;  // 45m
+                step_interval_ms = 1200000; // 20m
+                max_boost_limit = 2.0f;     // max +200%  
+                step_size = 0.15f;
+            }
+
+            bool is_stagnant = (error > 0.1f) && (error >= this->last_error_ - 0.01f);            
+            float target_boost = 1.0f;
+
+            if (is_stagnant) {
+                if (this->stagnation_start_time_ == 0)
+                    this->stagnation_start_time_ = millis();
+
+                uint32_t stuck_duration = millis() - this->stagnation_start_time_;
+
+                if (stuck_duration > initial_wait_ms) {
+                    uint32_t overtime = stuck_duration - initial_wait_ms;
+                    int step_count = overtime / step_interval_ms;
+
+                    // Calculate push based on configured step_size
+                    float extra_push = (step_count + 1) * step_size;
+                    
+                    target_boost = 1.0f + extra_push;
+                    if (target_boost > max_boost_limit) 
+                        target_boost = max_boost_limit;
+                } else {
+                    target_boost = this->current_stagnation_boost_;
+                }
+                
+                this->current_stagnation_boost_ = target_boost;
+
+            } else {
+                // decay when we see change
+                this->stagnation_start_time_ = 0; 
+                
+                if (this->current_stagnation_boost_ > 1.0f) {
+                    const float UPDATE_INTERVAL_MS = 300000.0f; // 5m
+                    float decay_step = step_size * (UPDATE_INTERVAL_MS / (float)step_interval_ms);
+                    this->current_stagnation_boost_ -= decay_step;
+                    
+                    if (this->current_stagnation_boost_ < 1.0f) {
+                        this->current_stagnation_boost_ = 1.0f;
+                    }
+                } else {
+                    this->current_stagnation_boost_ = 1.0f;
+                }
+            }
+
+            this->last_error_ = error;    
+            return this->current_stagnation_boost_;
+        }
+
         void Optimizer::process_adaptive_zone_(
             std::size_t i,
             const ecodan::Status &status,
+            float defrost_memory_ms,
             float cold_factor,
             float min_delta_cold_limit,
             float base_min_delta_t,
@@ -106,7 +185,7 @@ namespace esphome
                 }
 
                 // for z2 with z1/z2 circulation pump and mixing tank, demand translate into pump being active
-                if (status.has_independent_z2() && (status.WaterPump2Active || status.WaterPump3Active))
+                if (status.use_zone_specific_temps() && (status.WaterPump2Active || status.WaterPump3Active))
                     is_heating_active = true;
             }
 
@@ -117,8 +196,8 @@ namespace esphome
             float room_temp = (i == 0) ? status.Zone1RoomTemperature : status.Zone2RoomTemperature;
             float room_target_temp = (i == 0) ? status.Zone1SetTemperature : status.Zone2SetTemperature;
             float requested_flow_temp = (i == 0) ? status.Zone1FlowTemperatureSetPoint : status.Zone2FlowTemperatureSetPoint;
-            float actual_flow_temp = status.has_independent_z2() ? ((i == 0) ? status.Z1FeedTemperature : status.Z2FeedTemperature) : status.HpFeedTemperature;
-            float actual_return_temp = status.has_independent_z2() ? ((i == 0) ? status.Z1ReturnTemperature : status.Z2ReturnTemperature) : status.HpReturnTemperature;
+            float actual_flow_temp = status.use_zone_specific_temps() ? ((i == 0) ? status.Z1FeedTemperature : status.Z2FeedTemperature) : status.HpFeedTemperature;
+            float actual_return_temp = status.use_zone_specific_temps() ? ((i == 0) ? status.Z1ReturnTemperature : status.Z2ReturnTemperature) : status.HpReturnTemperature;
 
             if (!is_heating_mode && !is_cooling_mode)
                 return;
@@ -144,13 +223,14 @@ namespace esphome
             float error_normalized = error_positive / max_error_range;
             float x = fmin(error_normalized, 1.0f);
             float error_factor = use_linear_error ? x : x * x * (3.0f - 2.0f * x);
+            float smart_boost = is_heating_mode ? this->calculate_smart_boost(heating_type_index, error) : 1.0f;
             
             // apply cold factor
             float dynamic_min_delta_t = base_min_delta_t + (cold_factor * (min_delta_cold_limit - base_min_delta_t));
-            float target_delta_t = dynamic_min_delta_t + error_factor * (max_delta_t - dynamic_min_delta_t);
+            float target_delta_t = dynamic_min_delta_t + error_factor * smart_boost * (max_delta_t - dynamic_min_delta_t);
 
-            ESP_LOGD(OPTIMIZER_TAG, "Effective delta T: %.2f, cold factor: %.2f, dynamic min delta T: %.2f, error factor: %.2f, linear profile: %d", 
-                target_delta_t, cold_factor, dynamic_min_delta_t, error_factor, use_linear_error);
+            ESP_LOGD(OPTIMIZER_TAG, "Effective delta T: %.2f, cold factor: %.2f, dynamic min delta T: %.2f, error factor: %.2f, smart boost: %.2f, linear profile: %d", 
+                target_delta_t, cold_factor, dynamic_min_delta_t, error_factor, smart_boost, use_linear_error);
 
             if (is_heating_mode && is_heating_active)
             {
@@ -163,7 +243,6 @@ namespace esphome
                 {
                     const float DEFROST_RISK_MIN_TEMP = -2.0f;
                     const float DEFROST_RISK_MAX_TEMP = 3.0f;
-                    const uint32_t DEFROST_MEMORY_MS = 45 * 60 * 1000UL;
                     bool defrost_handling_enabled = this->state_.defrost_risk_handling_enabled->state;
                     bool is_defrost_weather = false;
                     uint32_t current_ms = millis();
@@ -173,7 +252,7 @@ namespace esphome
                         uint32_t last_defrost = this->last_defrost_time_;    
                         if (last_defrost > 0)
                         {
-                            if ((current_ms - last_defrost) < DEFROST_MEMORY_MS)
+                            if ((current_ms - last_defrost) < defrost_memory_ms)
                             {
                                 is_defrost_weather = true;
                             }
@@ -185,7 +264,7 @@ namespace esphome
                     if (is_defrost_weather && defrost_handling_enabled)
                     {
                         uint32_t elapsed_ms = current_ms - this->last_defrost_time_;
-                        float recovery_ratio = (float)elapsed_ms / (float)DEFROST_MEMORY_MS;
+                        float recovery_ratio = (float)elapsed_ms / (float)defrost_memory_ms;
 
                         recovery_ratio = std::clamp(recovery_ratio, 0.0f, 1.0f);
                         float delta_gap = fmax(target_delta_t - base_min_delta_t, 0.0f);
@@ -304,7 +383,7 @@ namespace esphome
                 return;
 
             auto heating_type_index = this->state_.heating_system_type->active_index().value_or(0);
-            float base_min_delta_t, max_delta_t, max_error_range, min_delta_cold_limit;
+            float base_min_delta_t, max_delta_t, max_error_range, min_delta_cold_limit, defrost_memory_ms;
 
             if (heating_type_index <= 1)
             {
@@ -313,6 +392,7 @@ namespace esphome
                 min_delta_cold_limit = 4.0f;
                 max_delta_t = 6.5f;
                 max_error_range = 2.0f;
+                defrost_memory_ms = 35 * 60 * 1000UL;
             }
             else if (heating_type_index <= 3)
             {
@@ -321,6 +401,7 @@ namespace esphome
                 min_delta_cold_limit = 5.0f;
                 max_delta_t = 8.0f;
                 max_error_range = 2.0f;
+                defrost_memory_ms = 25 * 60 * 1000UL;
             }
             else
             {
@@ -329,6 +410,7 @@ namespace esphome
                 min_delta_cold_limit = 6.0f;
                 max_delta_t = 10.0f;
                 max_error_range = 1.5f;
+                defrost_memory_ms = 15 * 60 * 1000UL;
             }
 
             const float MILD_WEATHER_TEMP = 15.0f;
@@ -337,7 +419,7 @@ namespace esphome
             float cold_factor = (MILD_WEATHER_TEMP - clamped_outside_temp) / (MILD_WEATHER_TEMP - COLD_WEATHER_TEMP);
 
             ESP_LOGD(OPTIMIZER_TAG, "[*] Starting auto-adaptive cycle, z2 independent: %d, has_cooling: %d, cold factor: %.2f, min delta T: %.2f, max delta T: %.2f", 
-                status.has_independent_z2(), status.has_cooling(), cold_factor, base_min_delta_t, max_delta_t);
+                status.has_independent_zone_temps(), status.has_cooling(), cold_factor, base_min_delta_t, max_delta_t);
 
             float calculated_flows_heat[2] = {0.0f, 0.0f};
             float calculated_flows_cool[2] = {100.0f, 100.0f};
@@ -371,6 +453,7 @@ namespace esphome
                 this->process_adaptive_zone_(
                     i,
                     status,
+                    defrost_memory_ms,
                     cold_factor,
                     min_delta_cold_limit,
                     base_min_delta_t,
@@ -386,7 +469,7 @@ namespace esphome
             bool is_heating_demand = calculated_flows_heat[0] > 0.0f || calculated_flows_heat[1] > 0.0f;
             bool is_cooling_demand = calculated_flows_cool[0] < 100.0f || calculated_flows_cool[1] < 100.0f;
 
-            if (status.has_independent_z2())
+            if (status.has_independent_zone_temps())
             {
                 if (is_heating_demand)
                 {

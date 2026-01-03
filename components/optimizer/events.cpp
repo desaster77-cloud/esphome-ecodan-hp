@@ -18,7 +18,7 @@ namespace esphome
 
             auto &status = this->state_.ecodan_instance->get_status();
 
-            if (status.has_independent_z2()) 
+            if (status.has_independent_zone_temps()) 
             {
                 if (zone == OptimizerZone::SINGLE) {
                     return;
@@ -45,7 +45,7 @@ namespace esphome
                 adjusted_flow += 0.5f;
                 // Each time we adjust for dhw, set the post dhw timer expiration
                 time_t current_timestamp = status.timestamp();
-                if (current_timestamp > 0) {
+                if (status.CompressorOn && current_timestamp > 0) {
                     const uint32_t after_dhw_monitoring_duration_s = 5 * 60UL;
                     this->dhw_post_run_expiration_ = (uint32_t)(current_timestamp + after_dhw_monitoring_duration_s);
                     ESP_LOGD(OPTIMIZER_TAG, "Setting monitor expiration to: %d", this->dhw_post_run_expiration_);
@@ -84,7 +84,7 @@ namespace esphome
         bool Optimizer::set_flow_temp(float flow, OptimizerZone zone) {
             auto &status = this->state_.ecodan_instance->get_status();
             
-            if (status.has_independent_z2())
+            if (status.has_independent_zone_temps())
             {
                 if (zone == OptimizerZone::ZONE_1) {
                     if (status.is_auto_adaptive_heating(esphome::ecodan::Zone::ZONE_1) && status.Zone1FlowTemperatureSetPoint != flow)
@@ -165,7 +165,7 @@ namespace esphome
                 float restored_flow_z1 = status.Zone1FlowTemperatureSetPoint - adjustment;
                 this->state_.ecodan_instance->set_flow_target_temperature(restored_flow_z1, esphome::ecodan::Zone::ZONE_1);
 
-                if (status.has_independent_z2())
+                if (status.has_independent_zone_temps())
                 {
                     float restored_flow_z2 = status.Zone2FlowTemperatureSetPoint - adjustment;
                     this->state_.ecodan_instance->set_flow_target_temperature(restored_flow_z2, esphome::ecodan::Zone::ZONE_2);
@@ -219,10 +219,6 @@ namespace esphome
             if (new_mode == heating_mode && previous_mode != heating_mode && this->state_.auto_adaptive_control_enabled->state) {
                 ESP_LOGD(OPTIMIZER_TAG, "Operation Mode Changed to heating: %d -> %d", previous_mode, new_mode);
                 this->run_auto_adaptive_loop();
-            }
-
-            if (new_mode != heating_mode) {
-                 this->reset_predictive_boost();
             }
         }
 

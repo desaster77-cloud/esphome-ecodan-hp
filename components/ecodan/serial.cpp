@@ -17,8 +17,12 @@ namespace ecodan
 
         if (buffer.get_write_offset() == 0) {
             bool skip_byte = is_proxy_message ? (byte != HEADER_MAGIC_A1 && byte != HEADER_MAGIC_A2) : (byte != HEADER_MAGIC_A1);
-            if (skip_byte)
+            if (skip_byte) {
                 return;
+            }
+            else if (is_proxy_message && !this->slave_detected_) {
+                this->slave_detected_ = true;
+            }
         }
 
         buffer.append_byte(byte);
@@ -41,15 +45,15 @@ namespace ecodan
                         ESP_LOGE(TAG, "Could not acquire uart_tx_mutex");
                     }
 
-                    // // handle handshake cached
-                    // if (buffer.matches(first_request, sizeof(first_request))) {
-                    //     proxy_uart_->write_array(expected_first_response, sizeof(expected_first_response));
-                    //     //ESP_LOGD(TAG, "Handshake: First request detected, sending response.");
-                    // }
-                    // else if (buffer.matches(second_request, sizeof(second_request))) {
-                    //     proxy_uart_->write_array(expected_second_response, sizeof(expected_second_response));
-                    //     //ESP_LOGD(TAG, "Handshake: Second request detected, sending response. Handshake complete!");
-                    // }
+                    // handle handshake cached
+                    if (buffer.matches(first_request, sizeof(first_request))) {
+                        proxy_uart_->write_array(expected_first_response, sizeof(expected_first_response));
+                        //ESP_LOGD(TAG, "Handshake: First request detected, sending response.");
+                    }
+                    else if (buffer.matches(second_request, sizeof(second_request))) {
+                        proxy_uart_->write_array(expected_second_response, sizeof(expected_second_response));
+                        //ESP_LOGD(TAG, "Handshake: Second request detected, sending response. Handshake complete!");
+                    }
                     // else if (buffer.matches(connect_request, sizeof(connect_request))) {
                     //     proxy_uart_->write_array(connect_response, sizeof(connect_response));
                     //     this->connected = true;
